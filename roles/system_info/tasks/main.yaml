@@ -1,0 +1,21 @@
+---
+- name: Install venv
+  pip:
+    name: virtualenv
+- name: Make directory
+  file:
+    path: /ansible/system-info/venv
+    state: directory
+- name: Transfer requirements.txt
+  copy:
+    src: requirements.txt
+    dest: /ansible/system-info
+- name: Install requirements to venv
+  pip:
+    requirements: /ansible/system-info/requirements.txt
+    virtualenv: /ansible/system-info/venv
+- name: Get machine info
+  script: system_info.py
+  args:
+    executable: /ansible/system-info/venv/bin/python3
+  register: result

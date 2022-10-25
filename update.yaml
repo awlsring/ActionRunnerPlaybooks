@@ -1,0 +1,7 @@
+# A playbook to update hosts. Handles RedHat and Debian families
+- name: Update hosts
+  hosts: all
+  become: yes
+  gather_facts: True
+  roles:
+    - update

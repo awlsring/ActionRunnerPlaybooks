@@ -1,0 +1,27 @@
+- name: Update (RedHat)
+  become: true
+  yum:
+    name: '*'
+    state: latest
+    update_cache: yes
+    update_only: yes
+  when: ansible_os_family == "RedHat"
+
+- name: Update (Debian)
+  apt:
+    force_apt_get: yes
+    autoclean: yes
+    autoremove: yes
+    update_cache: yes
+    upgrade: dist
+  when: ansible_os_family == "Debian"
+
+- name: Check if reboot is needed
+  stat:
+    path: /var/run/reboot-required
+  register: reboot_required
+
+- name: Reboot
+  reboot:
+    post_reboot_delay: 60
+  when: reboot_required.stat.exists

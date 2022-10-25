@@ -1,0 +1,8 @@
+# Gets system information from hosts.
+- name: Register machine
+  hosts: all
+  become: yes
+  gather_facts: True
+  roles:
+    - configuration/python
+    - system_info
