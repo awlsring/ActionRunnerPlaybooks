@@ -8,7 +8,6 @@ import dataclasses
 import sys
 import distro
 import sys
-# import pySMART
 from blkinfo import BlkDiskInfo
 import subprocess
 import re
@@ -44,22 +43,38 @@ class Memory:
     total: int
 
 @dataclass
+class Disk:
+    name: str
+    type: str
+    serial_number: str
+    size: int
+    model: str
+    vendor: Optional[str]
+    transport: Optional[str]
+    partitions: Optional[List[str]]
+
+@dataclass
 class Partition:
     name: str
     size: int
     mount: str
+    fstype: str
+
+@dataclass
+class Raid:
+    disks: List[str]
+    partitions: Optional[List[str]]
+    name: str
+    size: int
+    mount: str
+    fstype: str
     type: str
 
 @dataclass
-class Disk:
-    name: str
-    partitions: List[Partition] = None
-    type: Optional[str] = None
-    serial_number: Optional[str] = None
-    size: Optional[int] = 0
-    model: Optional[str] = None
-    vendor: Optional[str] = None
-    controller: Optional[str] = None
+class Storage:
+    disks: List[Disk]
+    partitions: List[Partition]
+    raids: List[Raid] 
 
 @dataclass
 class NIC:
@@ -77,7 +92,7 @@ class Machine:
     host: Host
     memory: Memory
     swap: Memory
-    disks: List[Disk]
+    storage: List[Storage]
     nics: List[NIC]
 
 class EnhancedJSONEncoder(json.JSONEncoder):
@@ -123,20 +138,6 @@ def get_machine_id() -> str:
     if process.stderr != "":
         raise Exception(f"Recieved error running call:\n{process.stderr}")
     return process.stdout.strip()
-
-def is_rotational(dev: str) -> bool:
-    process = subprocess.run(
-        [f"cat /sys/block/{dev}/queue/rotational"],
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    if process.stderr != "":
-        raise Exception(f"Recieved error running call:\n{process.stderr}")
-    if process.stdout.strip() == "0":
-        return False
-    return True
 
 def get_host_information() -> Host:
     uname = platform.uname()
@@ -210,54 +211,93 @@ def get_nics_info() -> List[NIC]:
         nics.append(nic)
     return nics
 
-def get_disk_info() -> List[Disk]:
+def get_partitions() -> Dict[str, Partition]:
+    results = {}
+    partitions = psutil.disk_partitions()
+    for partition in partitions:
+        if partition.fstype == "squashfs":
+            continue
+        try:
+            partition_usage = psutil.disk_usage(partition.mountpoint)
+        except PermissionError:
+            continue
+        name = partition.device.replace("/dev/", "")
+        p = Partition(
+            name=name,
+            size=partition_usage.total,
+            mount=partition.mountpoint,
+            fstype=partition.fstype,
+        )
+        results[name] = p
+
+    return results
+
+def get_storage_info() -> Storage:
     myblkd = BlkDiskInfo()
     all_disks = myblkd.get_disks()
-    disk_info = run_lshw()
+    all_partitions = get_partitions()
 
-    disks: Dict[str, Disk] = {}
+    partition_names = list(all_partitions.keys())
+    partitions = list(all_partitions.values())
 
-    for disk in disk_info:
-        if disk.get("logicalname", None):
-            name = disk["logicalname"].split("/")[2]
-            if name in disks:
-                continue
-            d = Disk(
-                name=name,
-                type="HDD" if is_rotational(name) else "SSD",
-                serial_number=disk.get("serial", None),
-                size=int(disk.get("size", 0)),
-                controller=disk.get("businfo", "@").split("@")[0],
-                model=disk.get("product", None),
-                vendor=disk.get("vendor", None),
-            )
-            disks[name] = d
+    storage = Storage([], partitions, [])
 
-    for disk in all_disks:
-        partitions = check_for_child_partitions(disk)
-        # remove duplicates
-        partitions = [partitions[i] for i in range(len(partitions)) if i == partitions.index(partitions[i]) ]
-        if disk.get("name", None):
-            name = disk["name"]
-            if disks.get(disk["name"]):
-                disks[name].partitions = partitions
-                if disks[name].type == None:
-                    disks[name].type = "SSD" if disk["rota"] == "0" else "HDD"
-                if disks[name].serial_number == None:
-                    disks[name].serial_number = disk.get("serial", None)
-                if disks[name].size == None:
-                    disks[name].size = int(disk.get("size", 0))
-                if disks[name].vendor == None:
-                    disks[name].vendor = disk.get("vendor", None)
-                if disks[name].model == None:
-                    disks[name].model = disk.get("model", None)
-            else:
-                if disk.get("type") == "raid1":
-                    for parent in disk.get("parents", []):
-                        if disks.get(parent, None):
-                            disks[parent].partitions = partitions
+    for item in all_disks:
+        print(f"On item {item['name']}")
+        if item["type"] == "disk":
+            disk = build_disk(item)
+            storage.disks.append(disk)
+        elif "raid" in item["type"]:
+            raid = build_raid(item)
+            for partition in disk.partitions:
+                if partition not in partition_names:
+                    disk.partitions.remove(partition)
+            storage.raids.append(raid)
 
-    return list(disks.values())
+    return storage
+
+def get_children(item: dict) -> List[str]:
+    results = []
+    for child in item.get("children", []):
+        if child.get("name"):
+            results.append(child["name"])
+            if len(child.get("children", [])) != 0:
+                children = get_children(child)
+                results.extend(children)
+    return results
+        
+
+def build_disk(disk: dict) -> Disk:
+    return Disk(
+        name=disk.get("name", None),
+        type="SSD" if disk["rota"] == "0" else "HDD",
+        size=int(disk.get("size", 0)),
+        model=disk.get("model", None),
+        vendor=disk.get("vendor", None),
+        serial_number=disk.get("serial", None),
+        transport=disk.get("tran", None),
+        partitions=get_children(disk)
+    )
+
+def build_partition(partition: dict) -> Partition:
+    return Partition(
+        name=partition.get("name", None),
+        size=int(partition.get("size", 0)),
+        mount=partition.get("mountpoint", None),
+        fstype=partition.get("fstype", None),
+        subpartitions=get_children(partition)
+    )
+
+def build_raid(raid: dict) -> Raid:
+    return Raid(
+        disks=raid.get("parents", []),
+        name=raid.get("name", None),
+        size=int(raid.get("size", 0)),
+        mount=raid.get("mountpoint", None),
+        fstype=raid.get("fstype", None),
+        type=raid.get("type", None),
+        partitions=list(set(get_children(raid)))
+    )
 
 def main():
     cpus = get_cpu_information()
@@ -265,13 +305,13 @@ def main():
     memory = get_memory_information()
     swap = get_swap_information()
     id = build_identifier()
-    disks = get_disk_info()
+    storage = get_storage_info()
     nics = get_nics_info()
 
-
-    machine = Machine(id, cpus, host, memory, swap, disks, nics)
+    machine = Machine(id, cpus, host, memory, swap, storage, nics)
     json_output = json.dumps(machine, indent=4, sort_keys=True, cls=EnhancedJSONEncoder)
     output = underscore_to_camel(json_output)
+    print(output)
     print(base64.b64encode(output.encode()).decode())
 
 main()
