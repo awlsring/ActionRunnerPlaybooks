@@ -8,10 +8,11 @@ import dataclasses
 import sys
 import distro
 import sys
-from blkinfo import BlkDiskInfo
 import subprocess
 import re
+import jc
 import base64
+import mdstat
 
 camel_pat = re.compile(r'([A-Z])')
 under_pat = re.compile(r'_([a-z])')
@@ -30,12 +31,10 @@ class CPU:
 
 @dataclass
 class Host:
-    uuid: str
     name: str
     os: str
     version: str
     kernel: str
-    uuid: str
     virtual: bool
 
 @dataclass
@@ -51,7 +50,6 @@ class Disk:
     model: str
     vendor: Optional[str]
     transport: Optional[str]
-    partitions: Optional[List[str]]
 
 @dataclass
 class Partition:
@@ -63,18 +61,15 @@ class Partition:
 @dataclass
 class Raid:
     disks: List[str]
-    partitions: Optional[List[str]]
     name: str
     size: int
-    mount: str
-    fstype: str
     type: str
 
 @dataclass
 class Storage:
-    disks: List[Disk]
     partitions: List[Partition]
-    raids: List[Raid] 
+    disks: Optional[List[Disk]]
+    raids: Optional[List[Raid]]
 
 @dataclass
 class NIC:
@@ -87,7 +82,6 @@ class NIC:
 @dataclass
 class Machine:
     """Machine"""
-    id: str
     cpus: List[CPU]
     host: Host
     memory: Memory
@@ -114,6 +108,27 @@ def run_lshw() -> dict:
         raise Exception(f"Recieved error running call:\n{process.stderr}")
     return json.loads(process.stdout)
   
+def transport_type(device: str):
+    if device.startswith("s"):
+        return "sata"
+    else:
+        return "nvme"
+
+def device_type(device: str) -> str:
+    process = subprocess.run(
+        [f"cat /sys/block/{device}/queue/rotational"],
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    if process.stderr != "":
+        raise Exception(f"Recieved error running call:\n{process.stderr}")
+    if process.stdout == "0":
+        return "SSD"
+    else:
+        return "HDD"
+
 def get_size(bytes, suffix="B"):
     """
     Scale bytes to its proper format
@@ -127,24 +142,11 @@ def get_size(bytes, suffix="B"):
             return f"{bytes:.2f}{unit}{suffix}"
         bytes /= factor
 
-def get_machine_id() -> str:
-    process = subprocess.run(
-        ["cat /etc/machine-id"],
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    if process.stderr != "":
-        raise Exception(f"Recieved error running call:\n{process.stderr}")
-    return process.stdout.strip()
-
 def get_host_information() -> Host:
     uname = platform.uname()
     os_info = distro.info()
 
     return Host(
-        uuid=get_machine_id(),
         name=uname.node,
         os=os_info["id"],
         version=os_info["version"],
@@ -167,10 +169,6 @@ def get_memory_information() -> Memory:
 
 def get_swap_information() -> Memory:
     return Memory(psutil.swap_memory().total)
-
-def build_identifier() -> str:
-    id = get_machine_id()
-    return f"m-{id}"
 
 def get_partition_info(partition) -> Partition:
     return Partition(
@@ -232,29 +230,53 @@ def get_partitions() -> Dict[str, Partition]:
 
     return results
 
+
+def run_mdadm(device: str) -> str:
+    process = subprocess.run(
+        [f"sudo mdadm --detail /dev/{device}"],
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    if process.stderr != "":
+        raise Exception(f"Recieved error running call:\n{process.stderr}")
+    return process.stdout
+
+def get_raid_info() -> List[Raid]:
+    raids = []
+    raids_info = mdstat.parse()
+    for device in raids_info["devices"].keys():
+        raid_info = jc.parse('mdadm', run_mdadm(device))
+        raid = build_raid(raid_info)
+        raids.append(raid)
+    return raids
+
+def get_disk_info() -> List[Disk]:
+    disks_info = run_lshw()
+    disks = []
+    for disk_info in disks_info:
+        if disk_info["id"] != "medium":
+            disk = build_disk(disk_info)
+            disks.append(disk)
+    return disks
+
 def get_storage_info() -> Storage:
-    myblkd = BlkDiskInfo()
-    all_disks = myblkd.get_disks()
-    all_partitions = get_partitions()
+    disks, partitions, raid = None, None, None
+    try:
+        disks = get_disk_info()
+    except Exception as e:
+        print(f"Error getting disk info: {e}")
+    try:
+        partitions = get_partitions()
+    except Exception as e:
+        print(f"Error getting partition info: {e}")
+    try:
+        raid = get_raid_info()
+    except Exception as e:
+        print(f"Error getting raid info: {e}")
 
-    partition_names = list(all_partitions.keys())
-    partitions = list(all_partitions.values())
-
-    storage = Storage([], partitions, [])
-
-    for item in all_disks:
-        print(f"On item {item['name']}")
-        if item["type"] == "disk":
-            disk = build_disk(item)
-            storage.disks.append(disk)
-        elif "raid" in item["type"]:
-            raid = build_raid(item)
-            for partition in disk.partitions:
-                if partition not in partition_names:
-                    disk.partitions.remove(partition)
-            storage.raids.append(raid)
-
-    return storage
+    return Storage(partitions, disks, raid)
 
 def get_children(item: dict) -> List[str]:
     results = []
@@ -268,15 +290,15 @@ def get_children(item: dict) -> List[str]:
         
 
 def build_disk(disk: dict) -> Disk:
+    name = disk.get("logicalname", str).replace("/dev/", "")
     return Disk(
-        name=disk.get("name", None),
-        type="SSD" if disk["rota"] == "0" else "HDD",
+        name=name,
+        type=device_type(name),
         size=int(disk.get("size", 0)),
-        model=disk.get("model", None),
+        model=disk.get("product", None),
         vendor=disk.get("vendor", None),
         serial_number=disk.get("serial", None),
-        transport=disk.get("tran", None),
-        partitions=get_children(disk)
+        transport=transport_type(name),
     )
 
 def build_partition(partition: dict) -> Partition:
@@ -289,14 +311,16 @@ def build_partition(partition: dict) -> Partition:
     )
 
 def build_raid(raid: dict) -> Raid:
+    name = raid.get("device", str).replace("/dev/", "")
+    disks = []
+    for device in raid["device_table"]:
+        disks.append(device["device"].replace("/dev/", ""))
+
     return Raid(
-        disks=raid.get("parents", []),
-        name=raid.get("name", None),
-        size=int(raid.get("size", 0)),
-        mount=raid.get("mountpoint", None),
-        fstype=raid.get("fstype", None),
-        type=raid.get("type", None),
-        partitions=list(set(get_children(raid)))
+        disks=disks,
+        name=name,
+        size=int(raid.get("array_size_num", 0)),
+        type=raid.get("raid_level", None),
     )
 
 def main():
@@ -304,11 +328,10 @@ def main():
     host = get_host_information()
     memory = get_memory_information()
     swap = get_swap_information()
-    id = build_identifier()
     storage = get_storage_info()
     nics = get_nics_info()
 
-    machine = Machine(id, cpus, host, memory, swap, storage, nics)
+    machine = Machine(cpus, host, memory, swap, storage, nics)
     json_output = json.dumps(machine, indent=4, sort_keys=True, cls=EnhancedJSONEncoder)
     output = underscore_to_camel(json_output)
     print(output)

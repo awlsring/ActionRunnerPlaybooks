@@ -2,3 +2,5 @@ blkinfo==0.2.0
 distro==1.8.0
 py-cpuinfo==8.0.0
 psutil==5.9.2
+jc==1.22.0
+mdstat==1.0.4
