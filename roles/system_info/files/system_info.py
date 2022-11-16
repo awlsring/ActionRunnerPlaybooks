@@ -210,7 +210,7 @@ def get_nics_info() -> List[NIC]:
     return nics
 
 def get_partitions() -> Dict[str, Partition]:
-    results = {}
+    results = []
     partitions = psutil.disk_partitions()
     for partition in partitions:
         if partition.fstype == "squashfs":
@@ -226,7 +226,7 @@ def get_partitions() -> Dict[str, Partition]:
             mount=partition.mountpoint,
             fstype=partition.fstype,
         )
-        results[name] = p
+        results.append(p)
 
     return results
 
