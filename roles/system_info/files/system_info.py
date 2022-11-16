@@ -124,7 +124,7 @@ def device_type(device: str) -> str:
     )
     if process.stderr != "":
         raise Exception(f"Recieved error running call:\n{process.stderr}")
-    if process.stdout == "0":
+    if "0" in process.stdout:
         return "SSD"
     else:
         return "HDD"
