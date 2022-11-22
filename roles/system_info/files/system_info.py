@@ -27,7 +27,7 @@ def underscore_to_camel(name):
 class CPU:
     model: str
     cores: int
-    arch: str
+    architecture: str
 
 @dataclass
 class Host:
@@ -80,6 +80,11 @@ class NIC:
     ipv6_local: Optional[str] = None
 
 @dataclass
+class Network:
+    primary_address: str
+    nics: List[NIC]
+
+@dataclass
 class Machine:
     """Machine"""
     cpus: List[CPU]
@@ -87,7 +92,7 @@ class Machine:
     memory: Memory
     swap: Memory
     storage: List[Storage]
-    nics: List[NIC]
+    network: Network
 
 class EnhancedJSONEncoder(json.JSONEncoder):
         def default(self, o):
@@ -331,7 +336,7 @@ def main():
     storage = get_storage_info()
     nics = get_nics_info()
 
-    machine = Machine(cpus, host, memory, swap, storage, nics)
+    machine = Machine(cpus, host, memory, swap, storage, Network("", nics))
     json_output = json.dumps(machine, indent=4, sort_keys=True, cls=EnhancedJSONEncoder)
     output = underscore_to_camel(json_output)
     print(output)
