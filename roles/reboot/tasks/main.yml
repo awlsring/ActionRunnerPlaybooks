@@ -1,4 +1,4 @@
 ---
-- name: Reboot when packages were updated
+- name: Reboot system
   reboot:
     post_reboot_delay: 60
