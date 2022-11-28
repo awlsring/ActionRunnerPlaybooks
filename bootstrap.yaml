@@ -1,0 +1,6 @@
+- name: Bootstrap
+  hosts: all
+  gather_facts: False
+  become: yes
+  roles:
+    - bootstrap
