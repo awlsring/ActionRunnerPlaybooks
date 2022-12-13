@@ -91,7 +91,7 @@ class IpV6Address:
     address: str
     gateway: str
     subnet_mask: str
-    public: str
+    broadcast: str
     type: str
 
 @dataclass
@@ -102,8 +102,8 @@ class IpAddressesSummary:
 @dataclass
 class NIC:
     name: str
-    ipv4: Optional[IpV4Address] = None
-    ipv6: Optional[List[IpV6Address]] = None
+    ipv4: Optional[str] = None
+    ipv6: Optional[List[str]] = None
     mac: str = None
 
 @dataclass
@@ -226,35 +226,34 @@ def check_for_child_partitions(d) -> List[Partition]:
 def get_network_info() -> Network:
     if_addrs = psutil.net_if_addrs()
 
+    ip_addresses = IpAddressesSummary([], [])
+
     nics: List[NIC] = []
     for interface_name, interface_addresses in if_addrs.items():
         nic = {"name": interface_name}
         name = interface_name
         ipv4 = None
-        ipv6: List[IpV6Address] = []
+        ipv6: List[str] = []
         mac = None
         for address in interface_addresses:
             if str(address.family) == 'AddressFamily.AF_INET':
                 ipv4 = IpV4Address(address.address, None, address.netmask, address.broadcast, False)
+                ip_addresses.ipv4.append(ipv4)
+                ipv4 = address.address
+
             if str(address.family) == 'AddressFamily.AF_INET6':
                 if "fe80::" in address.address:
-                    ipv6_addr = IpV6Address(address.address.split("%")[0], None, address.netmask, False, "LinkLocal")
-                    ipv6.append(ipv6_addr)
+                    ipv6_addr = IpV6Address(address.address.split("%")[0], None, address.netmask, address.broadcast, "LinkLocal")
+                    ip_addresses.ipv6.append(ipv6_addr)
+                    ipv6.append(address.address)
                 else:
-                    ipv6_addr = IpV6Address(address.address, None, address.netmask, True, "Global")
-                    ipv6.append(ipv6_addr)
+                    ipv6_addr = IpV6Address(address.address, None, address.netmask, address.broadcast, "Global")
+                    ip_addresses.ipv6.append(ipv6_addr)
+                    ipv6.append(address.address)
             elif str(address.family) == 'AddressFamily.AF_PACKET':
                 nic["mac"] = address.address
         nic = NIC(name, ipv4=ipv4, ipv6=ipv6, mac=mac)
         nics.append(nic)
-
-    ip_addresses = IpAddressesSummary([], [])
-
-    for nic in nics:
-        if nic.ipv4 is not None:
-            ip_addresses.ipv4.append(nic.ipv4)
-        if nic.ipv6 is not None:
-            ip_addresses.ipv6.extend(nic.ipv6)
 
     return Network(ip_addresses, nics)
 
