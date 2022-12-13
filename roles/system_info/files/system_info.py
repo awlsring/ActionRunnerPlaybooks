@@ -23,11 +23,18 @@ def camel_to_underscore(name):
 def underscore_to_camel(name):
     return under_pat.sub(lambda x: x.group(1).upper(), name)
 
+
 @dataclass
 class CPU:
     model: str
     cores: int
     architecture: str
+
+@dataclass
+class CPUSummary:
+    cores: int
+    sockets: int
+    cpus: List[CPU]
 
 @dataclass
 class Host:
@@ -72,16 +79,36 @@ class Storage:
     raids: Optional[List[Raid]]
 
 @dataclass
+class IpV4Address:
+    address: str
+    netmask: str
+    subnet_mask: str
+    broadcast: str
+    public: bool
+
+@dataclass
+class IpV6Address:
+    address: str
+    gateway: str
+    subnet_mask: str
+    public: str
+    type: str
+
+@dataclass
+class IpAddressesSummary:
+    ipv4: List[IpV4Address]
+    ipv6: List[IpV6Address]
+
+@dataclass
 class NIC:
     name: str
-    mac: Optional[str] = None
-    ipv4: Optional[str] = None
-    ipv6: Optional[str] = None
-    ipv6_local: Optional[str] = None
+    ipv4: Optional[IpV4Address] = None
+    ipv6: Optional[List[IpV6Address]] = None
+    mac: str = None
 
 @dataclass
 class Network:
-    primary_address: str
+    ip_addresses: IpAddressesSummary
     nics: List[NIC]
 
 @dataclass
@@ -159,15 +186,17 @@ def get_host_information() -> Host:
         virtual=True if hasattr(sys, 'real_prefix') else False
     )
 
-def get_cpu_information() -> List[CPU]:
+def get_cpu_information() -> CPUSummary:
     # Figure out how to get all cpus if there are mulitple
     cpu_info = cpuinfo.get_cpu_info()
     arch = cpu_info["arch_string_raw"]
     brand = cpu_info["brand_raw"]
     count = cpu_info["count"]
 
-    c = CPU(brand, count, arch)
-    return [c]
+    cpu = CPU(brand, count, arch)
+    c = CPUSummary(cores=count, sockets=1, cpus=[cpu])
+
+    return c
 
 def get_memory_information() -> Memory:
     return Memory(psutil.virtual_memory().total)
@@ -194,25 +223,40 @@ def check_for_child_partitions(d) -> List[Partition]:
         partitions.append(p)
     return partitions
 
-def get_nics_info() -> List[NIC]:
+def get_network_info() -> Network:
     if_addrs = psutil.net_if_addrs()
 
-    nics = []
+    nics: List[NIC] = []
     for interface_name, interface_addresses in if_addrs.items():
         nic = {"name": interface_name}
+        name = interface_name
+        ipv4 = None
+        ipv6: List[IpV6Address] = []
+        mac = None
         for address in interface_addresses:
             if str(address.family) == 'AddressFamily.AF_INET':
-                nic["ipv4"] = address.address
+                ipv4 = IpV4Address(address.address, None, address.netmask, address.broadcast, False)
             if str(address.family) == 'AddressFamily.AF_INET6':
                 if "fe80::" in address.address:
-                    nic["ipv6_local"] = address.address.split("%")[0]
+                    ipv6_addr = IpV6Address(address.address.split("%")[0], None, address.netmask, False, "LinkLocal")
+                    ipv6.append(ipv6_addr)
                 else:
-                    nic["ipv6"] = address.address
+                    ipv6_addr = IpV6Address(address.address, None, address.netmask, True, "Global")
+                    ipv6.append(ipv6_addr)
             elif str(address.family) == 'AddressFamily.AF_PACKET':
                 nic["mac"] = address.address
-        nic = NIC(**nic)
+        nic = NIC(name, ipv4=ipv4, ipv6=ipv6, mac=mac)
         nics.append(nic)
-    return nics
+
+    ip_addresses = IpAddressesSummary([], [])
+
+    for nic in nics:
+        if nic.ipv4 is not None:
+            ip_addresses.ipv4.append(nic.ipv4)
+        if nic.ipv6 is not None:
+            ip_addresses.ipv6.extend(nic.ipv6)
+
+    return Network(ip_addresses, nics)
 
 def get_partitions() -> Dict[str, Partition]:
     results = []
@@ -334,9 +378,9 @@ def main():
     memory = get_memory_information()
     swap = get_swap_information()
     storage = get_storage_info()
-    nics = get_nics_info()
+    network = get_network_info()
 
-    machine = Machine(cpus, host, memory, swap, storage, Network("", nics))
+    machine = Machine(cpus, host, memory, swap, storage, network)
     json_output = json.dumps(machine, indent=4, sort_keys=True, cls=EnhancedJSONEncoder)
     output = underscore_to_camel(json_output)
     print(output)
