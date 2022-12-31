@@ -17,6 +17,8 @@ import mdstat
 camel_pat = re.compile(r'([A-Z])')
 under_pat = re.compile(r'_([a-z])')
 
+IGNORED_INTERFACES = ["lo", "br-", "veth", "docker0"]
+
 def camel_to_underscore(name):
     return camel_pat.sub(lambda x: '_' + x.group(1).lower(), name)
 
@@ -223,6 +225,11 @@ def check_for_child_partitions(d) -> List[Partition]:
         partitions.append(p)
     return partitions
 
+def check_if_ignored_interface(name: str) -> bool:
+    for interface in IGNORED_INTERFACES:
+        if interface in name:
+            return True
+
 def get_network_info() -> Network:
     if_addrs = psutil.net_if_addrs()
 
@@ -230,6 +237,8 @@ def get_network_info() -> Network:
 
     nics: List[NIC] = []
     for interface_name, interface_addresses in if_addrs.items():
+        if check_if_ignored_interface(interface_name):
+            continue
         nic = {"name": interface_name}
         name = interface_name
         ipv4 = None
